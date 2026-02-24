@@ -383,10 +383,7 @@ async function loadAthletesFromSupabase() {
 
   const { data, error } = await supabaseClient
     .from(SUPABASE_TABLE)
-    .select("id,email,name,photo_url,profile_link,video_url,video_duration,score")
-    .not("score", "is", null)
-    .order("score", { ascending: false, nullsFirst: false })
-    .order("name", { ascending: true });
+    .select("*");
 
   if (error) throw error;
 
@@ -401,7 +398,8 @@ async function loadAthletesDataSource() {
     try {
       await loadAthletesFromSupabase();
       return;
-    } catch {
+    } catch (error) {
+      console.warn("[CALI] Supabase read failed. Falling back to data/athletes-db.json", error);
       await loadAthletesFromFile();
       return;
     }
@@ -419,7 +417,10 @@ async function fetchProfileFromSupabase(email) {
     .eq("email", email)
     .maybeSingle();
 
-  if (error) throw error;
+  if (error) {
+    console.warn("[CALI] Supabase profile load failed", error);
+    throw error;
+  }
   if (!data) return null;
   return mapSupabaseRowToProfile(data, email);
 }
@@ -432,7 +433,10 @@ async function upsertProfileToSupabase(profile) {
     .from(SUPABASE_TABLE)
     .upsert(payload, { onConflict: "email" });
 
-  if (error) return { ok: false, error };
+  if (error) {
+    console.warn("[CALI] Supabase upsert failed", error);
+    return { ok: false, error };
+  }
   return { ok: true, skipped: false };
 }
 
