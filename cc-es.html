@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CALISTHENICS RANKED</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <a class="corner-cta corner-cta--donations" href="https://gofund.me/dcc108c78" target="_blank" rel="noopener noreferrer" aria-label="Abrir donaciones">
+    DONATIONS
+  </a>
+
+  <a class="corner-cta corner-cta--right" href="regulations/index-es.html" aria-label="Ver reglamento">
+    EN QUÉ SE BASA?
+  </a>
+
+  <main class="page">
+    <section class="container" aria-label="Ranking de calistenia">
+      <header class="header">
+        <h1 class="title">CALISTHENICS WEB RANKING</h1>
+        <p class="subtitle"></p>
+      </header>
+
+      <section class="stats" aria-label="Estadísticas">
+        <article class="stat-card stat-card--neutral" aria-label="Total de atletas">
+          <div class="stat-top">
+            <span class="stat-icon" aria-hidden="true">👥</span>
+            <span class="stat-label">ATLETAS TOTALES</span>
+          </div>
+          <div class="stat-value" id="statTotal">0</div>
+        </article>
+
+        <article class="stat-card stat-card--up" aria-label="Subidas de posición">
+          <div class="stat-top">
+            <span class="stat-icon stat-icon--up" aria-hidden="true">▲</span>
+            <span class="stat-label">POSICIONES SUBIDAS</span>
+          </div>
+          <div class="stat-value stat-value--up" id="statUps">0</div>
+        </article>
+
+        <article class="stat-card stat-card--tie" aria-label="Número de empates">
+          <div class="stat-top">
+            <span class="stat-icon stat-icon--tie" aria-hidden="true">ℹ</span>
+            <span class="stat-label">EMPATES</span>
+          </div>
+          <div class="stat-value stat-value--tie" id="statTies">0</div>
+        </article>
+      </section>
+
+      <section class="legend" aria-label="Leyenda">
+        <div class="legend-item"><span class="legend-badge legend-badge--up">▲</span> Subió</div>
+        <div class="legend-item"><span class="legend-badge legend-badge--tie">⚠</span> Empató</div>
+      </section>
+
+      <section class="my-athlete" aria-label="Mi perfil de atleta">
+        <article id="myAthleteCard" class="athlete-card athlete-card--self" role="button" tabindex="0">
+          <div id="myAthleteRank" class="rank-badge rank-badge--normal">#—</div>
+          <div class="athlete-main">
+            <p id="myAthleteName" class="athlete-name">Crea tu perfil de atleta</p>
+            <p id="myAthleteMeta" class="athlete-meta">Inicia sesión y envíalo a revisión</p>
+          </div>
+          <div class="athlete-right">
+            <div id="myAthleteState" class="points-badge points-badge--normal">EDITAR</div>
+          </div>
+          <div class="my-athlete-overlay" aria-hidden="true"><span id="myAthleteOverlayText">EDITAR</span></div>
+        </article>
+      </section>
+
+      <section class="search" aria-label="Buscar">
+        <input
+          id="searchInput"
+          class="search-input"
+          type="text"
+          inputmode="search"
+          autocomplete="off"
+          placeholder="Buscar atleta por nombre o posición..."
+          aria-label="Buscar atleta por nombre o posición"
+        />
+      </section>
+
+      <section class="list" aria-label="Lista de atletas">
+        <div id="athletesList" class="athletes"></div>
+      </section>
+
+      <footer class="footer">
+        Haz clic en un atleta para ver su perfil completo
+      </footer>
+    </section>
+  </main>
+
+  <div id="modalOverlay" class="modal-overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Perfil del atleta">
+      <header class="modal-header">
+        <div id="modalTitle" class="modal-title">#1 - Atleta</div>
+        <button id="modalClose" class="modal-close" type="button" aria-label="Cerrar">⏎</button>
+      </header>
+
+      <div class="modal-body">
+        <div class="modal-hero">
+          <img id="modalPhoto" class="modal-photo" alt="Foto del atleta" />
+          <div class="modal-points">
+            <div class="modal-points-label">PUNTOS</div>
+            <div id="modalPoints" class="modal-points-value">0</div>
+            <div class="modal-duration">
+              <span class="modal-duration-label">DURACIÓN DEL VIDEO</span>
+              <span id="modalDuration" class="modal-duration-value">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <a id="modalVideo" class="btn btn--video" href="#" target="_blank" rel="noopener noreferrer">
+            VER VIDEO
+          </a>
+        </div>
+
+        <div class="modal-actions modal-actions--secondary">
+          <a id="modalAthleteInfo" class="btn btn--athlete-info" href="#" target="_blank" rel="noopener noreferrer">
+            INFORMACIÓN DEL ATLETA
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="profileOverlay" class="modal-overlay modal-overlay--profile" aria-hidden="true">
+    <div class="modal modal--profile" role="dialog" aria-modal="true" aria-label="Mi perfil de atleta">
+      <header class="modal-header">
+        <div class="modal-title">MI PERFIL DE ATLETA</div>
+        <button id="profileClose" class="modal-close" type="button" aria-label="Cerrar">⏎</button>
+      </header>
+
+      <div class="modal-body modal-body--profile">
+        <section id="profileAuthStep" class="profile-step">
+          <p class="profile-note">Usa tu correo para crear o recuperar tu perfil.</p>
+          <input id="profileEmailInput" class="profile-input" type="email" autocomplete="email" placeholder="tu@correo.com" />
+          <button id="profileLoginBtn" class="btn btn--send" type="button">CONTINUAR</button>
+        </section>
+
+        <section id="profileEditStep" class="profile-step" hidden>
+          <p id="profileSessionLine" class="profile-note"></p>
+
+          <div class="profile-items">
+            <button class="profile-item" type="button" data-edit-field="photo">
+              <span class="profile-item-label">FOTO DE PERFIL</span>
+              <span id="profilePhotoValue" class="profile-item-value">Sin configurar</span>
+            </button>
+
+            <button class="profile-item" type="button" data-edit-field="name">
+              <span class="profile-item-label">NOMBRE</span>
+              <span id="profileNameValue" class="profile-item-value">Sin configurar</span>
+            </button>
+
+            <button class="profile-item" type="button" data-edit-field="profileLink">
+              <span class="profile-item-label">ENLACE RRSS O WEB</span>
+              <span id="profileLinkValue" class="profile-item-value">Sin configurar</span>
+            </button>
+
+            <button class="profile-item" type="button" data-edit-field="video">
+              <span class="profile-item-label">VIDEO (URL O ARCHIVO)</span>
+              <span id="profileVideoValue" class="profile-item-value">Sin configurar</span>
+            </button>
+          </div>
+
+          <label class="profile-check">
+            <input id="profileTermsInput" type="checkbox" />
+            <span>Acepto términos y revisión de verificación.</span>
+          </label>
+
+          <p id="profileStatusLine" class="profile-note"></p>
+          <p id="profileVideoLockLine" class="profile-note"></p>
+          <p id="profileMessage" class="profile-message" aria-live="polite"></p>
+
+          <div class="profile-actions">
+            <button id="profileSendBtn" class="btn btn--send" type="button">ENVIAR A VERIFICACIÓN</button>
+            <button id="profileLogoutBtn" class="btn btn--athlete-info" type="button">CERRAR SESIÓN</button>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </div>
+
+  <nav class="lang-switch" aria-label="Cambiar idioma">
+    <a class="lang-switch__link" href="cc.html" lang="en">🇬🇧 EN</a>
+    <a class="lang-switch__link lang-switch__link--active" href="cc-es.html" lang="es" aria-current="page">🇪🇸 ES</a>
+  </nav>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
