@@ -1,8 +1,10 @@
-const STORAGE_KEY = "calisthenics_ranked_prev_positions_v1";
+const INDICATOR_STORAGE_KEY = "calisthenics_ranked_indicators_v2";
+const LEGACY_PREV_POSITIONS_KEY = "calisthenics_ranked_prev_positions_v1";
 const PROFILE_STORAGE_KEY = "calisthenics_ranked_profiles_v1";
 const SESSION_STORAGE_KEY = "calisthenics_ranked_session_v1";
 const ATHLETES_DB_PATH = "data/athletes-db.json";
 const VIDEO_LOCK_MS = 30 * 24 * 60 * 60 * 1000;
+const INDICATOR_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const PHOTO_MAX_BYTES = 4 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 200 * 1024 * 1024;
 const ACCEPTED_VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".m4v"]);
@@ -12,15 +14,15 @@ const SUPABASE_DEFAULT_CONFIG = {
   anonKey: "",
   table: "athletes",
   storageBucket: "athletes-media",
+  confirmationFunction: "send-submission-confirmation",
 };
 const SUPABASE_CONFIG = window.CALI_SUPABASE_CONFIG || SUPABASE_DEFAULT_CONFIG;
 const SUPABASE_URL = String(SUPABASE_CONFIG.url || "").trim();
 const SUPABASE_ANON_KEY = String(SUPABASE_CONFIG.anonKey || "").trim();
 const SUPABASE_TABLE = String(SUPABASE_CONFIG.table || SUPABASE_DEFAULT_CONFIG.table).trim() || SUPABASE_DEFAULT_CONFIG.table;
 const SUPABASE_STORAGE_BUCKET = String(SUPABASE_CONFIG.storageBucket || SUPABASE_DEFAULT_CONFIG.storageBucket).trim();
-const SUPABASE_EMAIL_REDIRECT_TO = String(
-  SUPABASE_CONFIG.emailRedirectTo ||
-  `${window.location.origin}${window.location.pathname}`
+const SUPABASE_CONFIRMATION_FUNCTION = String(
+  SUPABASE_CONFIG.confirmationFunction || SUPABASE_DEFAULT_CONFIG.confirmationFunction
 ).trim();
 const SUPABASE_AVAILABLE = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase?.createClient);
 
@@ -72,8 +74,10 @@ const I18N = {
     messagePhotoUploading: "Uploading photo...",
     messageVideoUploading: "Uploading video...",
     messageStorageUnavailable: "File upload is not available now. Configure Supabase Storage bucket.",
-    messageEmailVerificationSent: "Check your email and open the verification link. Then press Continue again.",
-    messageEmailVerified: "Email verified.",
+    messageDeletingProfile: "Deleting your form...",
+    messageProfileDeleted: "Your form has been deleted.",
+    messageDeleteError: "Could not delete your form.",
+    confirmDeleteProfile: "Delete all your submitted data? This action cannot be undone.",
     messageProfileCreated: "Profile ready. Complete your fields and send for verification.",
     messageProfileLoadError: "Could not load your profile from Supabase. Local draft loaded.",
     fieldPhotoTitle: "Edit profile photo",
@@ -134,8 +138,10 @@ const I18N = {
     messagePhotoUploading: "Subiendo foto...",
     messageVideoUploading: "Subiendo video...",
     messageStorageUnavailable: "La subida de archivos no está disponible ahora. Configura el bucket de Supabase Storage.",
-    messageEmailVerificationSent: "Revisa tu correo y abre el enlace de verificación. Luego pulsa Continuar otra vez.",
-    messageEmailVerified: "Correo verificado.",
+    messageDeletingProfile: "Eliminando tu formulario...",
+    messageProfileDeleted: "Tu formulario ha sido eliminado.",
+    messageDeleteError: "No se pudo eliminar tu formulario.",
+    confirmDeleteProfile: "¿Eliminar todos tus datos enviados? Esta acción no se puede deshacer.",
     messageProfileCreated: "Perfil listo. Completa tus campos y envíalo a verificación.",
     messageProfileLoadError: "No se pudo cargar tu perfil desde Supabase. Se cargó el borrador local.",
     fieldPhotoTitle: "Editar foto de perfil",
@@ -155,21 +161,7 @@ const I18N = {
 
 const TEXT = I18N[LANG];
 
-const baseAthletes = [
-  {
-    id: 1,
-    name: "paracu",
-    points: 5 + 3 + 2 + 3 + 2,
-    photo: "photos/paracu.jpeg",
-    socials: {
-      instagram: "https://www.instagram.com/paracu.sw/",
-      youtube: "https://youtube.com/@paracu_sw?si=YCiXktwlxgzpzq3P",
-      tiktok: "https://www.tiktok.com/@user691637720?_r=1&_t=ZN-942DjwGJtcU"
-    },
-    videoUrl: "https://www.instagram.com/reel/DPQelW6jZ55/?igsh=MWo2eWRubGJlN2N5cg==",
-    videoDuration: "0:20",
-  },
-];
+const baseAthletes = [];
 
 const $list = document.getElementById("athletesList");
 const $search = document.getElementById("searchInput");
@@ -206,6 +198,7 @@ const $profileStatusLine = document.getElementById("profileStatusLine");
 const $profileVideoLockLine = document.getElementById("profileVideoLockLine");
 const $profileMessage = document.getElementById("profileMessage");
 const $profileSendBtn = document.getElementById("profileSendBtn");
+const $profileDeleteBtn = document.getElementById("profileDeleteBtn");
 const $profileLogoutBtn = document.getElementById("profileLogoutBtn");
 
 const $profilePhotoValue = document.getElementById("profilePhotoValue");
@@ -215,7 +208,7 @@ const $profileVideoValue = document.getElementById("profileVideoValue");
 
 let ranked = [];
 let query = "";
-let prevPositions = loadPrevPositions();
+let indicatorState = loadIndicatorState();
 let renderLimit = 50;
 let lastFilteredCacheKey = "";
 let filteredCache = [];
@@ -338,14 +331,6 @@ async function uploadFileToSupabaseStorage(file, kind, email) {
   if (!publicUrl) return { ok: false, reason: "no_public_url" };
 
   return { ok: true, url: publicUrl, path };
-}
-
-async function getSupabaseAuthEmail() {
-  if (!hasSupabase()) return "";
-
-  const { data, error } = await supabaseClient.auth.getSession();
-  if (error) return "";
-  return normalizeEmail(data?.session?.user?.email || "");
 }
 
 function normalizeProfileStatus(value) {
@@ -526,6 +511,40 @@ async function upsertProfileToSupabase(profile) {
   return { ok: true, skipped: false };
 }
 
+function getConfirmationFunctionUrl() {
+  if (!hasSupabase()) return "";
+  if (!SUPABASE_CONFIRMATION_FUNCTION) return "";
+  return `${SUPABASE_URL}/functions/v1/${SUPABASE_CONFIRMATION_FUNCTION}`;
+}
+
+async function sendSubmissionConfirmationEmail(profile) {
+  const endpoint = getConfirmationFunctionUrl();
+  if (!endpoint) return;
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+      body: JSON.stringify({
+        email: profile.email,
+        name: profile.name || profile.email.split("@")[0] || "Athlete",
+        submittedAt: profile.submittedAt || nowIso(),
+        lang: LANG,
+      }),
+    });
+
+    if (!response.ok) {
+      console.warn("[CALI] Submission confirmation email failed", response.status);
+    }
+  } catch (error) {
+    console.warn("[CALI] Submission confirmation email request failed", error);
+  }
+}
+
 function makeFilterKey() {
   return `${norm(query)}|${ranked.length}|${ranked.map((a) => a.id).join(",")}`;
 }
@@ -540,25 +559,114 @@ function parsePositionJump(raw) {
   return n;
 }
 
-function loadPrevPositions() {
+function defaultIndicatorState() {
+  return {
+    version: 2,
+    computedAt: "",
+    sourceSignature: "",
+    positions: {},
+    indicators: {},
+  };
+}
+
+function normalizePositionsMap(value) {
+  if (!value || typeof value !== "object") return {};
+
+  const map = {};
+  for (const [id, raw] of Object.entries(value)) {
+    const position = Number(raw);
+    if (!Number.isFinite(position) || position <= 0) continue;
+    map[id] = position;
+  }
+  return map;
+}
+
+function normalizeIndicatorsMap(value) {
+  if (!value || typeof value !== "object") return {};
+
+  const map = {};
+  for (const [id, raw] of Object.entries(value)) {
+    if (!raw || typeof raw !== "object") continue;
+    map[id] = {
+      isTie: Boolean(raw.isTie),
+      isUp: Boolean(raw.isUp),
+      previousPosition: Number(raw.previousPosition) > 0 ? Number(raw.previousPosition) : 0,
+    };
+  }
+
+  return map;
+}
+
+function loadLegacyPositions() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(LEGACY_PREV_POSITIONS_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return {};
-    return parsed;
+    return normalizePositionsMap(parsed);
   } catch {
     return {};
   }
 }
 
-function savePrevPositions(map) {
+function loadIndicatorState() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+    const raw = localStorage.getItem(INDICATOR_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        return {
+          version: 2,
+          computedAt: String(parsed.computedAt || ""),
+          sourceSignature: String(parsed.sourceSignature || ""),
+          positions: normalizePositionsMap(parsed.positions),
+          indicators: normalizeIndicatorsMap(parsed.indicators),
+        };
+      }
+    }
+  } catch {
+  }
+
+  return {
+    ...defaultIndicatorState(),
+    positions: loadLegacyPositions(),
+  };
+}
+
+function saveIndicatorState(nextState) {
+  try {
+    localStorage.setItem(INDICATOR_STORAGE_KEY, JSON.stringify(nextState));
+    localStorage.removeItem(LEGACY_PREV_POSITIONS_KEY);
     return true;
   } catch {
     return false;
   }
+}
+
+function buildScoreSignature(sortedAthletes) {
+  return sortedAthletes
+    .map((athlete) => `${athlete.id}:${athlete.points}`)
+    .join("|");
+}
+
+function shouldRecomputeIndicators(sortedAthletes, sourceSignature) {
+  if (!indicatorState || typeof indicatorState !== "object") return true;
+  if (!indicatorState.computedAt) return true;
+  if (!indicatorState.sourceSignature) return true;
+  if (indicatorState.sourceSignature !== sourceSignature) return true;
+
+  const computedAt = new Date(indicatorState.computedAt).getTime();
+  if (!Number.isFinite(computedAt)) return true;
+  if (Date.now() - computedAt >= INDICATOR_RETENTION_MS) return true;
+
+  const positions = normalizePositionsMap(indicatorState.positions);
+  const indicators = normalizeIndicatorsMap(indicatorState.indicators);
+
+  for (const athlete of sortedAthletes) {
+    if (!positions[athlete.id]) return true;
+    if (!indicators[athlete.id]) return true;
+  }
+
+  return false;
 }
 
 function loadProfiles() {
@@ -736,34 +844,66 @@ function computeRanking() {
     return a.name.localeCompare(b.name, LANG === "es" ? "es" : "en");
   });
 
+  const sourceSignature = buildScoreSignature(sorted);
+  const recomputeIndicators = shouldRecomputeIndicators(sorted, sourceSignature);
+  const previousPositions = normalizePositionsMap(indicatorState.positions);
+  const cachedIndicators = normalizeIndicatorsMap(indicatorState.indicators);
+
   const pointsCount = new Map();
   for (const athlete of sorted) {
     pointsCount.set(athlete.points, (pointsCount.get(athlete.points) ?? 0) + 1);
   }
 
+  const nextIndicators = {};
+
   ranked = sorted.map((athlete, index) => {
     const position = index + 1;
-    const prev = Number(prevPositions[athlete.id] ?? position);
-    const isTie = (pointsCount.get(athlete.points) ?? 0) >= 2;
-    const isUp = prev > position;
+    const prev = Number(previousPositions[athlete.id] ?? position);
+    const liveIsTie = (pointsCount.get(athlete.points) ?? 0) >= 2;
+    const liveIsUp = prev > position;
+    const cached = cachedIndicators[athlete.id];
+
+    const previousPosition = !recomputeIndicators && Number(cached?.previousPosition) > 0
+      ? Number(cached.previousPosition)
+      : prev;
+    const isTie = !recomputeIndicators && typeof cached?.isTie === "boolean"
+      ? cached.isTie
+      : liveIsTie;
+    const isUp = !recomputeIndicators && typeof cached?.isUp === "boolean"
+      ? cached.isUp
+      : liveIsUp;
+
+    nextIndicators[athlete.id] = {
+      previousPosition,
+      isTie,
+      isUp,
+    };
 
     return {
       ...athlete,
       position,
-      previousPosition: prev,
+      previousPosition,
       isTie,
       isUp,
       photo: athlete.photo || makeAvatarDataUri(athlete.name)
     };
   });
 
-  lastFilteredCacheKey = "";
-}
+  if (recomputeIndicators) {
+    const nextPositions = {};
+    for (const athlete of ranked) nextPositions[athlete.id] = athlete.position;
 
-function persistCurrentPositions() {
-  const next = {};
-  for (const athlete of ranked) next[athlete.id] = athlete.position;
-  savePrevPositions(next);
+    indicatorState = {
+      version: 2,
+      computedAt: nowIso(),
+      sourceSignature,
+      positions: nextPositions,
+      indicators: nextIndicators,
+    };
+    saveIndicatorState(indicatorState);
+  }
+
+  lastFilteredCacheKey = "";
 }
 
 function getFilteredRanked() {
@@ -961,11 +1101,62 @@ function setProfileBusyState(isBusy) {
 
   if ($profileLoginBtn) $profileLoginBtn.disabled = profileBusy;
   if ($profileSendBtn) $profileSendBtn.disabled = profileBusy;
+  if ($profileDeleteBtn) $profileDeleteBtn.disabled = profileBusy;
   if ($profileLogoutBtn) $profileLogoutBtn.disabled = profileBusy;
 
   for (const button of document.querySelectorAll("[data-edit-field]")) {
     button.disabled = profileBusy;
   }
+}
+
+async function removeAllProfileStorageObjects(email) {
+  if (!hasSupabaseStorage()) return;
+
+  const safeEmail = sanitizeStorageSegment(email).replaceAll(".", "-");
+  const bucket = supabaseClient.storage.from(SUPABASE_STORAGE_BUCKET);
+  const prefixes = [`photos/${safeEmail}`, `videos/${safeEmail}`];
+
+  for (const prefix of prefixes) {
+    let offset = 0;
+
+    while (true) {
+      const { data, error } = await bucket.list(prefix, {
+        limit: 100,
+        offset,
+        sortBy: { column: "name", order: "asc" },
+      });
+
+      if (error) {
+        console.warn("[CALI] Supabase storage list failed", error);
+        break;
+      }
+
+      const rows = Array.isArray(data) ? data : [];
+      if (rows.length === 0) break;
+
+      const paths = rows
+        .filter((row) => row && typeof row.name === "string" && row.name)
+        .map((row) => `${prefix}/${row.name}`);
+
+      if (paths.length > 0) {
+        const { error: removeError } = await bucket.remove(paths);
+        if (removeError) {
+          console.warn("[CALI] Supabase storage remove failed", removeError);
+        }
+      }
+
+      if (rows.length < 100) break;
+      offset += 100;
+    }
+  }
+}
+
+function clearLocalSessionState() {
+  sessionEmail = "";
+  saveSessionEmail("");
+  resetProfileEditorTransientState();
+  if ($profileEmailInput) $profileEmailInput.value = "";
+  showAuthStep();
 }
 
 function showAuthStep() {
@@ -1108,7 +1299,6 @@ function syncProfileEditor() {
 function refreshAll() {
   computeRanking();
   renderList();
-  persistCurrentPositions();
   updateMyAthleteCard();
   syncProfileEditor();
 }
@@ -1381,12 +1571,21 @@ async function sendForVerification() {
     setProfileMessage(TEXT.messageSent);
     if ($profileTermsInput) $profileTermsInput.checked = false;
     refreshAll();
+    void sendSubmissionConfirmationEmail(profile);
   } finally {
     setProfileBusyState(false);
   }
 }
 
-async function completeProfileLogin(email, preferredMessage = "") {
+function removeLocalProfile(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return;
+  if (!profiles[normalized]) return;
+  delete profiles[normalized];
+  saveProfiles(profiles);
+}
+
+async function completeProfileLogin(email) {
   sessionEmail = email;
   saveSessionEmail(email);
 
@@ -1417,9 +1616,6 @@ async function completeProfileLogin(email, preferredMessage = "") {
   if (!existed && !message) {
     message = TEXT.messageProfileCreated;
   }
-  if (!message && preferredMessage) {
-    message = preferredMessage;
-  }
 
   showEditStep();
   resetProfileEditorTransientState();
@@ -1439,32 +1635,46 @@ async function handleProfileLogin() {
   setProfileBusyState(true);
 
   try {
-    if (!hasSupabase()) {
-      await completeProfileLogin(email);
-      return;
+    await completeProfileLogin(email);
+  } finally {
+    setProfileBusyState(false);
+  }
+}
+
+async function handleDeleteProfile() {
+  if (profileBusy) return;
+
+  const profile = getCurrentProfile();
+  if (!profile) {
+    setProfileMessage(TEXT.authInvalidEmail, true);
+    return;
+  }
+
+  if (!window.confirm(TEXT.confirmDeleteProfile)) return;
+
+  setProfileBusyState(true);
+  setProfileMessage(TEXT.messageDeletingProfile, false, true);
+
+  try {
+    if (hasSupabase()) {
+      const { error } = await supabaseClient
+        .from(SUPABASE_TABLE)
+        .delete()
+        .eq("email", profile.email);
+
+      if (error) {
+        console.warn("[CALI] Supabase delete failed", error);
+        setProfileMessage(TEXT.messageDeleteError, true);
+        return;
+      }
+
+      await removeAllProfileStorageObjects(profile.email);
     }
 
-    const authEmail = await getSupabaseAuthEmail();
-    if (authEmail === email) {
-      await completeProfileLogin(email, TEXT.messageEmailVerified);
-      return;
-    }
-
-    const { error } = await supabaseClient.auth.signInWithOtp({
-      email,
-      options: {
-        shouldCreateUser: true,
-        emailRedirectTo: SUPABASE_EMAIL_REDIRECT_TO,
-      },
-    });
-
-    if (error) {
-      setProfileMessage(TEXT.messageServerUnavailable, true);
-      return;
-    }
-
-    showAuthStep();
-    setProfileMessage(TEXT.messageEmailVerificationSent);
+    removeLocalProfile(profile.email);
+    clearLocalSessionState();
+    refreshAll();
+    setProfileMessage(TEXT.messageProfileDeleted);
   } finally {
     setProfileBusyState(false);
   }
@@ -1476,18 +1686,9 @@ async function handleProfileLogout() {
   setProfileBusyState(true);
 
   try {
-    if (hasSupabase()) {
-      const { error } = await supabaseClient.auth.signOut();
-      if (error) console.warn("[CALI] Supabase signOut failed", error);
-    }
-
-    sessionEmail = "";
-    saveSessionEmail("");
-    resetProfileEditorTransientState();
-    if ($profileEmailInput) $profileEmailInput.value = "";
-    setProfileMessage(TEXT.messageSignedOut);
-    showAuthStep();
+    clearLocalSessionState();
     refreshAll();
+    setProfileMessage(TEXT.messageSignedOut);
   } finally {
     setProfileBusyState(false);
   }
@@ -1537,6 +1738,9 @@ $profileTermsInput?.addEventListener("change", () => {
 $profileSendBtn?.addEventListener("click", () => {
   void sendForVerification();
 });
+$profileDeleteBtn?.addEventListener("click", () => {
+  void handleDeleteProfile();
+});
 $profileLogoutBtn?.addEventListener("click", () => {
   void handleProfileLogout();
 });
@@ -1563,17 +1767,6 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function syncSessionProfileFromSupabase() {
-  if (hasSupabase()) {
-    const authEmail = await getSupabaseAuthEmail();
-    if (authEmail) {
-      sessionEmail = authEmail;
-      saveSessionEmail(authEmail);
-    } else {
-      sessionEmail = "";
-      saveSessionEmail("");
-    }
-  }
-
   if (!sessionEmail) return;
 
   const localProfile = getOrCreateProfile(sessionEmail);
@@ -1594,33 +1787,7 @@ async function syncSessionProfileFromSupabase() {
   }
 }
 
-function bindSupabaseAuthListener() {
-  if (!hasSupabase()) return;
-
-  supabaseClient.auth.onAuthStateChange((_event, session) => {
-    const email = normalizeEmail(session?.user?.email || "");
-
-    if (email) {
-      sessionEmail = email;
-      saveSessionEmail(email);
-      getOrCreateProfile(email);
-      if ($profileOverlay?.classList.contains("is-open")) {
-        showEditStep();
-        resetProfileEditorTransientState();
-        setProfileMessage(TEXT.messageEmailVerified);
-      }
-    } else {
-      sessionEmail = "";
-      saveSessionEmail("");
-      showAuthStep();
-    }
-
-    refreshAll();
-  });
-}
-
 async function bootstrap() {
-  bindSupabaseAuthListener();
   await syncSessionProfileFromSupabase();
   await loadAthletesDataSource();
   refreshAll();
