@@ -4,5 +4,5 @@ window.CALI_SUPABASE_CONFIG = {
   table: "athletes",
   storageBucket: "athletes-media",
   confirmationFunction: "send-submission-confirmation",
-  authRedirectTo: "",
+  authRedirectTo: "https://pppg9dptzv-wq.github.io/v3/cc.html",
 };
