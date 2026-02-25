@@ -3,16 +3,25 @@ const PROFILE_STORAGE_KEY = "calisthenics_ranked_profiles_v1";
 const SESSION_STORAGE_KEY = "calisthenics_ranked_session_v1";
 const ATHLETES_DB_PATH = "data/athletes-db.json";
 const VIDEO_LOCK_MS = 30 * 24 * 60 * 60 * 1000;
-const PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
+const PHOTO_MAX_BYTES = 4 * 1024 * 1024;
+const VIDEO_MAX_BYTES = 200 * 1024 * 1024;
+const ACCEPTED_VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".m4v"]);
+const PROFILE_MESSAGE_TIMEOUT_MS = 4500;
 const SUPABASE_DEFAULT_CONFIG = {
   url: "",
   anonKey: "",
   table: "athletes",
+  storageBucket: "athletes-media",
 };
 const SUPABASE_CONFIG = window.CALI_SUPABASE_CONFIG || SUPABASE_DEFAULT_CONFIG;
 const SUPABASE_URL = String(SUPABASE_CONFIG.url || "").trim();
 const SUPABASE_ANON_KEY = String(SUPABASE_CONFIG.anonKey || "").trim();
 const SUPABASE_TABLE = String(SUPABASE_CONFIG.table || SUPABASE_DEFAULT_CONFIG.table).trim() || SUPABASE_DEFAULT_CONFIG.table;
+const SUPABASE_STORAGE_BUCKET = String(SUPABASE_CONFIG.storageBucket || SUPABASE_DEFAULT_CONFIG.storageBucket).trim();
+const SUPABASE_EMAIL_REDIRECT_TO = String(
+  SUPABASE_CONFIG.emailRedirectTo ||
+  `${window.location.origin}${window.location.pathname}`
+).trim();
 const SUPABASE_AVAILABLE = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase?.createClient);
 
 const LANG = (document.documentElement.lang || "en").toLowerCase().startsWith("es") ? "es" : "en";
@@ -54,14 +63,21 @@ const I18N = {
     messageSignedOut: "Session closed.",
     messageServerUnavailable: "Could not connect to Supabase. Check your config and network.",
     messageVideoLocked: "You can only change video once every 30 days.",
-    messagePhotoTooLarge: "Photo is too large. Maximum size is 1.5MB.",
+    messagePhotoTooLarge: "Photo is too large. Maximum size is 4MB.",
     messagePhotoInvalid: "Select a valid image file.",
     messagePhotoMissing: "Choose an image file first.",
     messageVideoMissing: "Add a video URL or select a video file.",
+    messageVideoInvalid: "Select a valid video file (MP4, MOV or WEBM).",
+    messageVideoTooLarge: "Video is too large. Maximum size is 200MB.",
+    messagePhotoUploading: "Uploading photo...",
+    messageVideoUploading: "Uploading video...",
+    messageStorageUnavailable: "File upload is not available now. Configure Supabase Storage bucket.",
+    messageEmailVerificationSent: "Check your email and open the verification link. Then press Continue again.",
+    messageEmailVerified: "Email verified.",
     messageProfileCreated: "Profile ready. Complete your fields and send for verification.",
     messageProfileLoadError: "Could not load your profile from Supabase. Local draft loaded.",
     fieldPhotoTitle: "Edit profile photo",
-    fieldPhotoHelp: "Upload JPG or PNG up to 1.5MB.",
+    fieldPhotoHelp: "Upload JPG or PNG up to 4MB.",
     fieldNameTitle: "Edit name",
     fieldNamePlaceholder: "Athlete name",
     fieldProfileLinkTitle: "Edit social or website link",
@@ -109,14 +125,21 @@ const I18N = {
     messageSignedOut: "Sesión cerrada.",
     messageServerUnavailable: "No se pudo conectar con Supabase. Revisa la configuración y la red.",
     messageVideoLocked: "Solo puedes cambiar el video una vez cada 30 días.",
-    messagePhotoTooLarge: "La foto es demasiado grande. Máximo 1.5MB.",
+    messagePhotoTooLarge: "La foto es demasiado grande. Máximo 4MB.",
     messagePhotoInvalid: "Selecciona una imagen válida.",
     messagePhotoMissing: "Elige primero un archivo de imagen.",
     messageVideoMissing: "Añade una URL de video o selecciona un archivo de video.",
+    messageVideoInvalid: "Selecciona un video válido (MP4, MOV o WEBM).",
+    messageVideoTooLarge: "El video es demasiado grande. Máximo 200MB.",
+    messagePhotoUploading: "Subiendo foto...",
+    messageVideoUploading: "Subiendo video...",
+    messageStorageUnavailable: "La subida de archivos no está disponible ahora. Configura el bucket de Supabase Storage.",
+    messageEmailVerificationSent: "Revisa tu correo y abre el enlace de verificación. Luego pulsa Continuar otra vez.",
+    messageEmailVerified: "Correo verificado.",
     messageProfileCreated: "Perfil listo. Completa tus campos y envíalo a verificación.",
     messageProfileLoadError: "No se pudo cargar tu perfil desde Supabase. Se cargó el borrador local.",
     fieldPhotoTitle: "Editar foto de perfil",
-    fieldPhotoHelp: "Sube JPG o PNG hasta 1.5MB.",
+    fieldPhotoHelp: "Sube JPG o PNG hasta 4MB.",
     fieldNameTitle: "Editar nombre",
     fieldNamePlaceholder: "Nombre del atleta",
     fieldProfileLinkTitle: "Editar enlace de red social o web",
@@ -200,6 +223,8 @@ let profiles = loadProfiles();
 let sessionEmail = loadSessionEmail();
 let fileAthletes = [];
 let supabaseClient = createSupabaseClient();
+let profileMessageTimer = 0;
+let profileBusy = false;
 
 function norm(s) {
   return (s ?? "").toString().trim().toLowerCase();
@@ -260,6 +285,67 @@ function createSupabaseClient() {
 
 function hasSupabase() {
   return Boolean(supabaseClient);
+}
+
+function hasSupabaseStorage() {
+  return hasSupabase() && Boolean(SUPABASE_STORAGE_BUCKET);
+}
+
+function fileExtension(fileName) {
+  const name = String(fileName || "").toLowerCase();
+  const index = name.lastIndexOf(".");
+  if (index < 0) return "";
+  return name.slice(index);
+}
+
+function isValidVideoFile(file) {
+  if (!file) return false;
+  if (String(file.type || "").startsWith("video/")) return true;
+  return ACCEPTED_VIDEO_EXTENSIONS.has(fileExtension(file.name));
+}
+
+function sanitizeStorageSegment(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "file";
+}
+
+function buildStoragePath(kind, email, fileName) {
+  const safeKind = kind === "video" ? "videos" : "photos";
+  const safeEmail = sanitizeStorageSegment(email).replaceAll(".", "-");
+  const safeName = sanitizeStorageSegment(fileName);
+  return `${safeKind}/${safeEmail}/${Date.now()}-${safeName}`;
+}
+
+async function uploadFileToSupabaseStorage(file, kind, email) {
+  if (!hasSupabaseStorage()) return { ok: false, reason: "storage_unavailable" };
+
+  const path = buildStoragePath(kind, email, file.name);
+  const bucket = supabaseClient.storage.from(SUPABASE_STORAGE_BUCKET);
+
+  const { error } = await bucket.upload(path, file, {
+    cacheControl: "3600",
+    upsert: true,
+    contentType: file.type || undefined,
+  });
+
+  if (error) return { ok: false, reason: "upload_error", error };
+
+  const { data } = bucket.getPublicUrl(path);
+  const publicUrl = String(data?.publicUrl || "").trim();
+  if (!publicUrl) return { ok: false, reason: "no_public_url" };
+
+  return { ok: true, url: publicUrl, path };
+}
+
+async function getSupabaseAuthEmail() {
+  if (!hasSupabase()) return "";
+
+  const { data, error } = await supabaseClient.auth.getSession();
+  if (error) return "";
+  return normalizeEmail(data?.session?.user?.email || "");
 }
 
 function normalizeProfileStatus(value) {
@@ -846,10 +932,40 @@ function nextVideoChangeDate(profile) {
   return new Date(updated + VIDEO_LOCK_MS);
 }
 
-function setProfileMessage(message, isError = false) {
+function setProfileMessage(message, isError = false, sticky = false) {
+  if (profileMessageTimer) {
+    clearTimeout(profileMessageTimer);
+    profileMessageTimer = 0;
+  }
+
   if (!$profileMessage) return;
   $profileMessage.textContent = message || "";
   $profileMessage.classList.toggle("profile-message--error", Boolean(isError));
+
+  if (!message || sticky) return;
+
+  profileMessageTimer = window.setTimeout(() => {
+    if (!$profileMessage) return;
+    if ($profileMessage.textContent !== message) return;
+    setProfileMessage("", false, true);
+  }, PROFILE_MESSAGE_TIMEOUT_MS);
+}
+
+function resetProfileEditorTransientState() {
+  if ($profileTermsInput) $profileTermsInput.checked = false;
+  setProfileMessage("", false, true);
+}
+
+function setProfileBusyState(isBusy) {
+  profileBusy = Boolean(isBusy);
+
+  if ($profileLoginBtn) $profileLoginBtn.disabled = profileBusy;
+  if ($profileSendBtn) $profileSendBtn.disabled = profileBusy;
+  if ($profileLogoutBtn) $profileLogoutBtn.disabled = profileBusy;
+
+  for (const button of document.querySelectorAll("[data-edit-field]")) {
+    button.disabled = profileBusy;
+  }
 }
 
 function showAuthStep() {
@@ -868,10 +984,11 @@ function openProfileModal() {
   if (sessionEmail) {
     getOrCreateProfile(sessionEmail);
     showEditStep();
+    resetProfileEditorTransientState();
     syncProfileEditor();
   } else {
     showAuthStep();
-    setProfileMessage("");
+    resetProfileEditorTransientState();
   }
 
   $profileOverlay.classList.add("is-open");
@@ -959,8 +1076,6 @@ function syncProfileSummaryFields() {
       $profileVideoValue.textContent = TEXT.notSet;
     }
   }
-
-  if ($profileTermsInput) $profileTermsInput.checked = Boolean(profile.termsAccepted);
 }
 
 function syncProfileStateLines() {
@@ -1035,22 +1150,29 @@ function pickFile(accept) {
 }
 
 async function saveProfileAndRefresh(profile) {
-  const saved = persistCurrentProfile(profile);
-  if (!saved) {
-    setProfileMessage(TEXT.messageSaveError, true);
-    return false;
-  }
+  if (profileBusy) return false;
+  setProfileBusyState(true);
 
-  const syncResult = await upsertProfileToSupabase(profile);
-  if (!syncResult.ok) {
-    setProfileMessage(TEXT.messageSavedLocal, true);
+  try {
+    const saved = persistCurrentProfile(profile);
+    if (!saved) {
+      setProfileMessage(TEXT.messageSaveError, true);
+      return false;
+    }
+
+    const syncResult = await upsertProfileToSupabase(profile);
+    if (!syncResult.ok) {
+      setProfileMessage(TEXT.messageSavedLocal, true);
+      refreshAll();
+      return false;
+    }
+
+    setProfileMessage(TEXT.messageSaved);
     refreshAll();
-    return false;
+    return true;
+  } finally {
+    setProfileBusyState(false);
   }
-
-  setProfileMessage(TEXT.messageSaved);
-  refreshAll();
-  return true;
 }
 
 async function editTextField(field) {
@@ -1078,6 +1200,8 @@ async function editTextField(field) {
 }
 
 async function editPhotoField() {
+  if (profileBusy) return;
+
   const profile = getCurrentProfile();
   if (!profile) {
     setProfileMessage(TEXT.authInvalidEmail, true);
@@ -1096,17 +1220,33 @@ async function editPhotoField() {
     return;
   }
 
+  setProfileBusyState(true);
+  setProfileMessage(TEXT.messagePhotoUploading, false, true);
+
   try {
-    profile.photoData = await readFileAsDataUrl(file);
+    if (hasSupabaseStorage()) {
+      const uploaded = await uploadFileToSupabaseStorage(file, "photo", profile.email);
+      if (!uploaded.ok) {
+        setProfileMessage(TEXT.messageServerUnavailable, true);
+        return;
+      }
+      profile.photoData = uploaded.url;
+    } else {
+      profile.photoData = await readFileAsDataUrl(file);
+    }
   } catch {
     setProfileMessage(TEXT.messageSaveError, true);
     return;
+  } finally {
+    setProfileBusyState(false);
   }
 
   await saveProfileAndRefresh(profile);
 }
 
 async function editVideoField() {
+  if (profileBusy) return;
+
   const profile = getCurrentProfile();
   if (!profile) {
     setProfileMessage(TEXT.authInvalidEmail, true);
@@ -1130,8 +1270,34 @@ async function editVideoField() {
   } else {
     const file = await pickFile("video/*");
     if (!file) return;
-    profile.videoUrl = "";
-    profile.videoFileName = file.name;
+
+    if (!isValidVideoFile(file)) {
+      setProfileMessage(TEXT.messageVideoInvalid, true);
+      return;
+    }
+    if (file.size > VIDEO_MAX_BYTES) {
+      setProfileMessage(TEXT.messageVideoTooLarge, true);
+      return;
+    }
+    if (!hasSupabaseStorage()) {
+      setProfileMessage(TEXT.messageStorageUnavailable, true);
+      return;
+    }
+
+    setProfileBusyState(true);
+    setProfileMessage(TEXT.messageVideoUploading, false, true);
+
+    try {
+      const uploaded = await uploadFileToSupabaseStorage(file, "video", profile.email);
+      if (!uploaded.ok) {
+        setProfileMessage(TEXT.messageServerUnavailable, true);
+        return;
+      }
+      profile.videoUrl = uploaded.url;
+      profile.videoFileName = file.name;
+    } finally {
+      setProfileBusyState(false);
+    }
   }
 
   profile.videoUpdatedAt = nowIso();
@@ -1161,27 +1327,27 @@ function readFileAsDataUrl(file) {
   });
 }
 
-function validateProfileForSubmission(profile) {
+function validateProfileForSubmission(profile, termsAccepted) {
   if (!profile.name || !profile.name.trim()) return TEXT.messageNeedName;
   if (!profile.videoUrl && !profile.videoFileName) return TEXT.messageNeedVideo;
-  if (!profile.termsAccepted) return TEXT.messageNeedTerms;
+  if (!termsAccepted) return TEXT.messageNeedTerms;
   return "";
 }
 
 async function sendForVerification() {
+  if (profileBusy) return;
+
   const profile = getCurrentProfile();
   if (!profile) return;
 
-  if (!$profileTermsInput?.checked) {
-    profile.termsAccepted = false;
-    persistCurrentProfile(profile);
+  const termsAccepted = Boolean($profileTermsInput?.checked);
+  if (!termsAccepted) {
     setProfileMessage(TEXT.messageNeedTerms, true);
     syncProfileEditor();
     return;
   }
 
-  profile.termsAccepted = true;
-  const validation = validateProfileForSubmission(profile);
+  const validation = validateProfileForSubmission(profile, termsAccepted);
   if (validation) {
     setProfileMessage(validation, true);
     syncProfileEditor();
@@ -1191,35 +1357,36 @@ async function sendForVerification() {
   const prevStatus = profile.status;
   const prevSubmittedAt = profile.submittedAt;
 
+  setProfileBusyState(true);
   profile.status = "pending";
   profile.submittedAt = nowIso();
+  profile.termsAccepted = true;
 
-  if (!persistCurrentProfile(profile)) {
-    setProfileMessage(TEXT.messageSaveError, true);
-    return;
-  }
+  try {
+    if (!persistCurrentProfile(profile)) {
+      setProfileMessage(TEXT.messageSaveError, true);
+      return;
+    }
 
-  const syncResult = await upsertProfileToSupabase(profile);
-  if (!syncResult.ok) {
-    profile.status = prevStatus;
-    profile.submittedAt = prevSubmittedAt;
-    persistCurrentProfile(profile);
-    setProfileMessage(TEXT.messageServerUnavailable, true);
+    const syncResult = await upsertProfileToSupabase(profile);
+    if (!syncResult.ok) {
+      profile.status = prevStatus;
+      profile.submittedAt = prevSubmittedAt;
+      persistCurrentProfile(profile);
+      setProfileMessage(TEXT.messageServerUnavailable, true);
+      refreshAll();
+      return;
+    }
+
+    setProfileMessage(TEXT.messageSent);
+    if ($profileTermsInput) $profileTermsInput.checked = false;
     refreshAll();
-    return;
+  } finally {
+    setProfileBusyState(false);
   }
-
-  setProfileMessage(TEXT.messageSent);
-  refreshAll();
 }
 
-async function handleProfileLogin() {
-  const email = normalizeEmail($profileEmailInput?.value);
-  if (!email) {
-    setProfileMessage(TEXT.authInvalidEmail, true);
-    return;
-  }
-
+async function completeProfileLogin(email, preferredMessage = "") {
   sessionEmail = email;
   saveSessionEmail(email);
 
@@ -1250,18 +1417,80 @@ async function handleProfileLogin() {
   if (!existed && !message) {
     message = TEXT.messageProfileCreated;
   }
+  if (!message && preferredMessage) {
+    message = preferredMessage;
+  }
 
   showEditStep();
+  resetProfileEditorTransientState();
   setProfileMessage(message, messageIsError);
   refreshAll();
 }
 
-function handleProfileLogout() {
-  sessionEmail = "";
-  saveSessionEmail("");
-  setProfileMessage(TEXT.messageSignedOut);
-  showAuthStep();
-  refreshAll();
+async function handleProfileLogin() {
+  if (profileBusy) return;
+
+  const email = normalizeEmail($profileEmailInput?.value);
+  if (!email) {
+    setProfileMessage(TEXT.authInvalidEmail, true);
+    return;
+  }
+
+  setProfileBusyState(true);
+
+  try {
+    if (!hasSupabase()) {
+      await completeProfileLogin(email);
+      return;
+    }
+
+    const authEmail = await getSupabaseAuthEmail();
+    if (authEmail === email) {
+      await completeProfileLogin(email, TEXT.messageEmailVerified);
+      return;
+    }
+
+    const { error } = await supabaseClient.auth.signInWithOtp({
+      email,
+      options: {
+        shouldCreateUser: true,
+        emailRedirectTo: SUPABASE_EMAIL_REDIRECT_TO,
+      },
+    });
+
+    if (error) {
+      setProfileMessage(TEXT.messageServerUnavailable, true);
+      return;
+    }
+
+    showAuthStep();
+    setProfileMessage(TEXT.messageEmailVerificationSent);
+  } finally {
+    setProfileBusyState(false);
+  }
+}
+
+async function handleProfileLogout() {
+  if (profileBusy) return;
+
+  setProfileBusyState(true);
+
+  try {
+    if (hasSupabase()) {
+      const { error } = await supabaseClient.auth.signOut();
+      if (error) console.warn("[CALI] Supabase signOut failed", error);
+    }
+
+    sessionEmail = "";
+    saveSessionEmail("");
+    resetProfileEditorTransientState();
+    if ($profileEmailInput) $profileEmailInput.value = "";
+    setProfileMessage(TEXT.messageSignedOut);
+    showAuthStep();
+    refreshAll();
+  } finally {
+    setProfileBusyState(false);
+  }
 }
 
 $modalClose?.addEventListener("click", closeModal);
@@ -1300,21 +1529,17 @@ $profileEmailInput?.addEventListener("keydown", (event) => {
 });
 
 $profileTermsInput?.addEventListener("change", () => {
-  const profile = getCurrentProfile();
-  if (!profile) return;
-  profile.termsAccepted = Boolean($profileTermsInput.checked);
-  if (!persistCurrentProfile(profile)) {
-    setProfileMessage(TEXT.messageSaveError, true);
-    return;
-  }
-  void upsertProfileToSupabase(profile);
-  syncProfileEditor();
+  if (profileBusy) return;
+  if (!$profileTermsInput?.checked) return;
+  setProfileMessage("");
 });
 
 $profileSendBtn?.addEventListener("click", () => {
   void sendForVerification();
 });
-$profileLogoutBtn?.addEventListener("click", handleProfileLogout);
+$profileLogoutBtn?.addEventListener("click", () => {
+  void handleProfileLogout();
+});
 
 for (const button of document.querySelectorAll("[data-edit-field]")) {
   button.addEventListener("click", () => {
@@ -1338,6 +1563,17 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function syncSessionProfileFromSupabase() {
+  if (hasSupabase()) {
+    const authEmail = await getSupabaseAuthEmail();
+    if (authEmail) {
+      sessionEmail = authEmail;
+      saveSessionEmail(authEmail);
+    } else {
+      sessionEmail = "";
+      saveSessionEmail("");
+    }
+  }
+
   if (!sessionEmail) return;
 
   const localProfile = getOrCreateProfile(sessionEmail);
@@ -1358,7 +1594,33 @@ async function syncSessionProfileFromSupabase() {
   }
 }
 
+function bindSupabaseAuthListener() {
+  if (!hasSupabase()) return;
+
+  supabaseClient.auth.onAuthStateChange((_event, session) => {
+    const email = normalizeEmail(session?.user?.email || "");
+
+    if (email) {
+      sessionEmail = email;
+      saveSessionEmail(email);
+      getOrCreateProfile(email);
+      if ($profileOverlay?.classList.contains("is-open")) {
+        showEditStep();
+        resetProfileEditorTransientState();
+        setProfileMessage(TEXT.messageEmailVerified);
+      }
+    } else {
+      sessionEmail = "";
+      saveSessionEmail("");
+      showAuthStep();
+    }
+
+    refreshAll();
+  });
+}
+
 async function bootstrap() {
+  bindSupabaseAuthListener();
   await syncSessionProfileFromSupabase();
   await loadAthletesDataSource();
   refreshAll();
