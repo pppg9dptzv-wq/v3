@@ -3,5 +3,5 @@ window.CALI_SUPABASE_CONFIG = {
   anonKey: "sb_publishable_PSf8SMlvd1WIlDrkWT8znw_ibLVgH5a",
   table: "athletes",
   storageBucket: "athletes-media",
-  emailRedirectTo: "",
+  confirmationFunction: "send-submission-confirmation",
 };
