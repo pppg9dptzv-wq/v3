@@ -24,6 +24,10 @@ const SUPABASE_STORAGE_BUCKET = String(SUPABASE_CONFIG.storageBucket || SUPABASE
 const SUPABASE_CONFIRMATION_FUNCTION = String(
   SUPABASE_CONFIG.confirmationFunction || SUPABASE_DEFAULT_CONFIG.confirmationFunction
 ).trim();
+const SUPABASE_AUTH_REDIRECT_TO = String(
+  SUPABASE_CONFIG.authRedirectTo ||
+  `${window.location.origin}${window.location.pathname}`
+).trim();
 const SUPABASE_AVAILABLE = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase?.createClient);
 
 const LANG = (document.documentElement.lang || "en").toLowerCase().startsWith("es") ? "es" : "en";
@@ -58,6 +62,9 @@ const I18N = {
     messageSaved: "Saved.",
     messageSavedLocal: "Saved locally. Could not sync with server.",
     messageSaveError: "Could not save changes.",
+    messageAuthEmailSent: "Check your email and open the access link, then return here.",
+    messageAuthRequired: "You must be authenticated to continue.",
+    messageAuthWrongEmail: "This session is linked to another email. Use that email or sign out first.",
     messageNeedName: "Add your name first.",
     messageNeedVideo: "Add a video URL or upload a video file first.",
     messageNeedTerms: "Accept terms before sending for verification.",
@@ -122,6 +129,9 @@ const I18N = {
     messageSaved: "Guardado.",
     messageSavedLocal: "Guardado en local. No se pudo sincronizar con el servidor.",
     messageSaveError: "No se pudieron guardar los cambios.",
+    messageAuthEmailSent: "Revisa tu correo y abre el enlace de acceso, luego vuelve aquí.",
+    messageAuthRequired: "Debes estar autenticado para continuar.",
+    messageAuthWrongEmail: "Esta sesión está vinculada a otro correo. Usa ese correo o cierra sesión primero.",
     messageNeedName: "Añade primero tu nombre.",
     messageNeedVideo: "Añade una URL de video o sube un archivo de video.",
     messageNeedTerms: "Acepta los términos antes de enviar a verificación.",
@@ -218,6 +228,7 @@ let fileAthletes = [];
 let supabaseClient = createSupabaseClient();
 let profileMessageTimer = 0;
 let profileBusy = false;
+let authIdentity = null;
 
 function norm(s) {
   return (s ?? "").toString().trim().toLowerCase();
@@ -284,6 +295,21 @@ function hasSupabaseStorage() {
   return hasSupabase() && Boolean(SUPABASE_STORAGE_BUCKET);
 }
 
+function normalizeAuthIdentity(user) {
+  const id = String(user?.id || "").trim();
+  const email = normalizeEmail(user?.email || "");
+  if (!id || !email) return null;
+  return { id, email };
+}
+
+async function getCurrentAuthIdentity() {
+  if (!hasSupabase()) return null;
+
+  const { data, error } = await supabaseClient.auth.getSession();
+  if (error) return null;
+  return normalizeAuthIdentity(data?.session?.user);
+}
+
 function fileExtension(fileName) {
   const name = String(fileName || "").toLowerCase();
   const index = name.lastIndexOf(".");
@@ -305,17 +331,17 @@ function sanitizeStorageSegment(value) {
     .replace(/^-|-$/g, "") || "file";
 }
 
-function buildStoragePath(kind, email, fileName) {
+function buildStoragePath(kind, ownerId, fileName) {
   const safeKind = kind === "video" ? "videos" : "photos";
-  const safeEmail = sanitizeStorageSegment(email).replaceAll(".", "-");
+  const safeOwnerId = sanitizeStorageSegment(ownerId);
   const safeName = sanitizeStorageSegment(fileName);
-  return `${safeKind}/${safeEmail}/${Date.now()}-${safeName}`;
+  return `${safeKind}/${safeOwnerId}/${Date.now()}-${safeName}`;
 }
 
-async function uploadFileToSupabaseStorage(file, kind, email) {
+async function uploadFileToSupabaseStorage(file, kind, ownerId) {
   if (!hasSupabaseStorage()) return { ok: false, reason: "storage_unavailable" };
 
-  const path = buildStoragePath(kind, email, file.name);
+  const path = buildStoragePath(kind, ownerId, file.name);
   const bucket = supabaseClient.storage.from(SUPABASE_STORAGE_BUCKET);
 
   const { error } = await bucket.upload(path, file, {
@@ -343,6 +369,7 @@ function mapSupabaseRowToProfile(row, fallbackEmail) {
   if (!email) return null;
 
   const profile = buildDefaultProfile(email);
+  profile.userId = String(row?.user_id ?? row?.userId ?? "").trim();
   profile.name = String(row?.name || "").trim();
   profile.photoData = String(row?.photo_url ?? row?.photoData ?? "").trim();
   profile.profileLink = String(row?.profile_link ?? row?.profileLink ?? "").trim();
@@ -362,6 +389,7 @@ function mapSupabaseRowToProfile(row, fallbackEmail) {
 function mapProfileToSupabaseRow(profile) {
   return {
     email: profile.email,
+    user_id: profile.userId || null,
     name: profile.name || "",
     photo_url: profile.photoData || "",
     profile_link: profile.profileLink || "",
@@ -387,7 +415,8 @@ function normalizeDbAthlete(row, index) {
   if (!name) return null;
 
   const email = normalizeEmail(row.email ?? row.correo ?? "");
-  const rawId = String(row.id ?? email ?? `${name}-${index}`).trim();
+  const ownerUserId = String(row.user_id ?? row.userId ?? "").trim();
+  const rawId = String(row.id ?? ownerUserId ?? email ?? `${name}-${index}`).trim();
 
   const photo = String(row.photo ?? row.photo_url ?? row.photoUrl ?? row.foto ?? "").trim();
   const profileLink = String(
@@ -421,6 +450,7 @@ function normalizeDbAthlete(row, index) {
   return {
     id: `db:${rawId}`,
     ownerEmail: email || undefined,
+    ownerUserId: ownerUserId || undefined,
     name,
     points: score,
     photo: photo || makeAvatarDataUri(name),
@@ -454,7 +484,7 @@ async function loadAthletesFromSupabase() {
 
   const { data, error } = await supabaseClient
     .from(SUPABASE_TABLE)
-    .select("*");
+    .select("id,user_id,name,photo_url,profile_link,video_url,video_duration,score");
 
   if (error) throw error;
 
@@ -511,35 +541,25 @@ async function upsertProfileToSupabase(profile) {
   return { ok: true, skipped: false };
 }
 
-function getConfirmationFunctionUrl() {
-  if (!hasSupabase()) return "";
-  if (!SUPABASE_CONFIRMATION_FUNCTION) return "";
-  return `${SUPABASE_URL}/functions/v1/${SUPABASE_CONFIRMATION_FUNCTION}`;
-}
-
 async function sendSubmissionConfirmationEmail(profile) {
-  const endpoint = getConfirmationFunctionUrl();
-  if (!endpoint) return;
+  if (!hasSupabase()) return;
+  if (!SUPABASE_CONFIRMATION_FUNCTION) return;
+  if (!authIdentity?.id) return;
 
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      },
-      body: JSON.stringify({
+    const { error } = await supabaseClient.functions.invoke(
+      SUPABASE_CONFIRMATION_FUNCTION,
+      {
+        body: {
         email: profile.email,
         name: profile.name || profile.email.split("@")[0] || "Athlete",
         submittedAt: profile.submittedAt || nowIso(),
         lang: LANG,
-      }),
-    });
+      },
+      }
+    );
 
-    if (!response.ok) {
-      console.warn("[CALI] Submission confirmation email failed", response.status);
-    }
+    if (error) console.warn("[CALI] Submission confirmation email failed", error);
   } catch (error) {
     console.warn("[CALI] Submission confirmation email request failed", error);
   }
@@ -709,6 +729,7 @@ function saveSessionEmail(email) {
 function buildDefaultProfile(email) {
   return {
     email,
+    userId: "",
     name: "",
     photoData: "",
     profileLink: "",
@@ -740,6 +761,7 @@ function migrateLegacyProfile(profile) {
   }
 
   if (typeof migrated.name !== "string") migrated.name = "";
+  if (typeof migrated.userId !== "string") migrated.userId = "";
   if (typeof migrated.photoData !== "string") migrated.photoData = "";
   if (typeof migrated.videoUrl !== "string") migrated.videoUrl = "";
   if (typeof migrated.videoFileName !== "string") migrated.videoFileName = "";
@@ -1109,12 +1131,12 @@ function setProfileBusyState(isBusy) {
   }
 }
 
-async function removeAllProfileStorageObjects(email) {
+async function removeAllProfileStorageObjects(ownerId) {
   if (!hasSupabaseStorage()) return;
 
-  const safeEmail = sanitizeStorageSegment(email).replaceAll(".", "-");
+  const safeOwnerId = sanitizeStorageSegment(ownerId);
   const bucket = supabaseClient.storage.from(SUPABASE_STORAGE_BUCKET);
-  const prefixes = [`photos/${safeEmail}`, `videos/${safeEmail}`];
+  const prefixes = [`photos/${safeOwnerId}`, `videos/${safeOwnerId}`];
 
   for (const prefix of prefixes) {
     let offset = 0;
@@ -1151,7 +1173,9 @@ async function removeAllProfileStorageObjects(email) {
   }
 }
 
-function clearLocalSessionState() {
+function clearLocalSessionState(options = {}) {
+  const keepAuth = Boolean(options.keepAuth);
+  if (!keepAuth) authIdentity = null;
   sessionEmail = "";
   saveSessionEmail("");
   resetProfileEditorTransientState();
@@ -1172,7 +1196,13 @@ function showEditStep() {
 function openProfileModal() {
   if (!$profileOverlay) return;
 
-  if (sessionEmail) {
+  const canEditWithCurrentSession = Boolean(
+    sessionEmail &&
+    authIdentity?.id &&
+    authIdentity.email === sessionEmail
+  );
+
+  if (canEditWithCurrentSession) {
     getOrCreateProfile(sessionEmail);
     showEditStep();
     resetProfileEditorTransientState();
@@ -1208,7 +1238,12 @@ function updateMyAthleteCard() {
     return;
   }
 
-  const rankedEntry = ranked.find((athlete) => athlete.ownerEmail === profile.email);
+  const rankedEntry = ranked.find((athlete) => {
+    if (profile.userId && athlete.ownerUserId) {
+      return athlete.ownerUserId === profile.userId;
+    }
+    return athlete.ownerEmail === profile.email;
+  });
   const status = profile.status || "draft";
   const fallbackName = profile.email.split("@")[0] || TEXT.myCardGuestName;
 
@@ -1344,6 +1379,18 @@ async function saveProfileAndRefresh(profile) {
   setProfileBusyState(true);
 
   try {
+    if (hasSupabase()) {
+      if (!authIdentity?.id) {
+        setProfileMessage(TEXT.messageAuthRequired, true);
+        return false;
+      }
+      if (authIdentity.email !== profile.email) {
+        setProfileMessage(TEXT.messageAuthWrongEmail, true);
+        return false;
+      }
+      profile.userId = authIdentity.id;
+    }
+
     const saved = persistCurrentProfile(profile);
     if (!saved) {
       setProfileMessage(TEXT.messageSaveError, true);
@@ -1415,7 +1462,12 @@ async function editPhotoField() {
 
   try {
     if (hasSupabaseStorage()) {
-      const uploaded = await uploadFileToSupabaseStorage(file, "photo", profile.email);
+      if (!authIdentity?.id) {
+        setProfileMessage(TEXT.messageAuthRequired, true);
+        return;
+      }
+
+      const uploaded = await uploadFileToSupabaseStorage(file, "photo", authIdentity.id);
       if (!uploaded.ok) {
         setProfileMessage(TEXT.messageServerUnavailable, true);
         return;
@@ -1473,12 +1525,16 @@ async function editVideoField() {
       setProfileMessage(TEXT.messageStorageUnavailable, true);
       return;
     }
+    if (!authIdentity?.id) {
+      setProfileMessage(TEXT.messageAuthRequired, true);
+      return;
+    }
 
     setProfileBusyState(true);
     setProfileMessage(TEXT.messageVideoUploading, false, true);
 
     try {
-      const uploaded = await uploadFileToSupabaseStorage(file, "video", profile.email);
+      const uploaded = await uploadFileToSupabaseStorage(file, "video", authIdentity.id);
       if (!uploaded.ok) {
         setProfileMessage(TEXT.messageServerUnavailable, true);
         return;
@@ -1530,6 +1586,17 @@ async function sendForVerification() {
   const profile = getCurrentProfile();
   if (!profile) return;
 
+  if (hasSupabase()) {
+    if (!authIdentity?.id) {
+      setProfileMessage(TEXT.messageAuthRequired, true);
+      return;
+    }
+    if (authIdentity.email !== profile.email) {
+      setProfileMessage(TEXT.messageAuthWrongEmail, true);
+      return;
+    }
+  }
+
   const termsAccepted = Boolean($profileTermsInput?.checked);
   if (!termsAccepted) {
     setProfileMessage(TEXT.messageNeedTerms, true);
@@ -1551,6 +1618,7 @@ async function sendForVerification() {
   profile.status = "pending";
   profile.submittedAt = nowIso();
   profile.termsAccepted = true;
+  if (authIdentity?.id) profile.userId = authIdentity.id;
 
   try {
     if (!persistCurrentProfile(profile)) {
@@ -1585,7 +1653,16 @@ function removeLocalProfile(email) {
   saveProfiles(profiles);
 }
 
-async function completeProfileLogin(email) {
+async function completeProfileLogin(identity, options = {}) {
+  const silent = Boolean(options.silent);
+  const email = normalizeEmail(identity?.email);
+  const userId = String(identity?.id || "").trim();
+  if (!email || !userId) {
+    setProfileMessage(TEXT.messageAuthRequired, true);
+    return;
+  }
+
+  authIdentity = { id: userId, email };
   sessionEmail = email;
   saveSessionEmail(email);
 
@@ -1598,14 +1675,32 @@ async function completeProfileLogin(email) {
     setProfileMessage(TEXT.messageSaveError, true);
     return;
   }
+  localProfile.userId = userId;
+  persistCurrentProfile(localProfile);
 
   if (hasSupabase()) {
     try {
       const remoteProfile = await fetchProfileFromSupabase(email);
       if (remoteProfile) {
+        const needsClaim = !remoteProfile.userId || remoteProfile.userId !== userId;
+        remoteProfile.userId = userId;
         profiles[email] = remoteProfile;
         saveProfiles(profiles);
         existed = true;
+
+        if (needsClaim) {
+          const claimResult = await upsertProfileToSupabase(remoteProfile);
+          if (!claimResult.ok) {
+            message = TEXT.messageSavedLocal;
+            messageIsError = true;
+          }
+        }
+      } else {
+        const syncResult = await upsertProfileToSupabase(localProfile);
+        if (!syncResult.ok) {
+          message = TEXT.messageSavedLocal;
+          messageIsError = true;
+        }
       }
     } catch {
       message = TEXT.messageProfileLoadError;
@@ -1619,7 +1714,9 @@ async function completeProfileLogin(email) {
 
   showEditStep();
   resetProfileEditorTransientState();
-  setProfileMessage(message, messageIsError);
+  if (!silent || messageIsError) {
+    setProfileMessage(message, messageIsError);
+  }
   refreshAll();
 }
 
@@ -1635,7 +1732,43 @@ async function handleProfileLogin() {
   setProfileBusyState(true);
 
   try {
-    await completeProfileLogin(email);
+    if (!hasSupabase()) {
+      setProfileMessage(TEXT.messageServerUnavailable, true);
+      return;
+    }
+
+    const currentIdentity = await getCurrentAuthIdentity();
+    if (currentIdentity?.email === email) {
+      await completeProfileLogin(currentIdentity);
+      return;
+    }
+
+    if (currentIdentity?.email && currentIdentity.email !== email) {
+      const { error: signOutError } = await supabaseClient.auth.signOut();
+      if (signOutError) {
+        setProfileMessage(TEXT.messageAuthWrongEmail, true);
+        return;
+      }
+
+      authIdentity = null;
+      sessionEmail = "";
+      saveSessionEmail("");
+    }
+
+    const { error } = await supabaseClient.auth.signInWithOtp({
+      email,
+      options: {
+        shouldCreateUser: true,
+        emailRedirectTo: SUPABASE_AUTH_REDIRECT_TO,
+      },
+    });
+
+    if (error) {
+      setProfileMessage(TEXT.messageServerUnavailable, true);
+      return;
+    }
+
+    setProfileMessage(TEXT.messageAuthEmailSent);
   } finally {
     setProfileBusyState(false);
   }
@@ -1657,10 +1790,19 @@ async function handleDeleteProfile() {
 
   try {
     if (hasSupabase()) {
+      if (!authIdentity?.id) {
+        setProfileMessage(TEXT.messageAuthRequired, true);
+        return;
+      }
+      if (authIdentity.email !== profile.email) {
+        setProfileMessage(TEXT.messageAuthWrongEmail, true);
+        return;
+      }
+
       const { error } = await supabaseClient
         .from(SUPABASE_TABLE)
         .delete()
-        .eq("email", profile.email);
+        .eq("user_id", authIdentity.id);
 
       if (error) {
         console.warn("[CALI] Supabase delete failed", error);
@@ -1668,7 +1810,7 @@ async function handleDeleteProfile() {
         return;
       }
 
-      await removeAllProfileStorageObjects(profile.email);
+      await removeAllProfileStorageObjects(authIdentity.id);
     }
 
     removeLocalProfile(profile.email);
@@ -1686,6 +1828,11 @@ async function handleProfileLogout() {
   setProfileBusyState(true);
 
   try {
+    if (hasSupabase()) {
+      const { error } = await supabaseClient.auth.signOut();
+      if (error) console.warn("[CALI] Supabase signOut failed", error);
+    }
+
     clearLocalSessionState();
     refreshAll();
     setProfileMessage(TEXT.messageSignedOut);
@@ -1767,27 +1914,37 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function syncSessionProfileFromSupabase() {
-  if (!sessionEmail) return;
-
-  const localProfile = getOrCreateProfile(sessionEmail);
-  if (!localProfile) {
-    sessionEmail = "";
-    saveSessionEmail("");
+  if (!hasSupabase()) {
+    clearLocalSessionState();
     return;
   }
 
+  const identity = await getCurrentAuthIdentity();
+  if (!identity) {
+    clearLocalSessionState();
+    return;
+  }
+
+  await completeProfileLogin(identity, { silent: true });
+}
+
+function bindSupabaseAuthListener() {
   if (!hasSupabase()) return;
 
-  try {
-    const remoteProfile = await fetchProfileFromSupabase(sessionEmail);
-    if (!remoteProfile) return;
-    profiles[sessionEmail] = remoteProfile;
-    saveProfiles(profiles);
-  } catch {
-  }
+  supabaseClient.auth.onAuthStateChange((_event, session) => {
+    const identity = normalizeAuthIdentity(session?.user);
+    if (!identity) {
+      clearLocalSessionState();
+      refreshAll();
+      return;
+    }
+
+    void completeProfileLogin(identity, { silent: true });
+  });
 }
 
 async function bootstrap() {
+  bindSupabaseAuthListener();
   await syncSessionProfileFromSupabase();
   await loadAthletesDataSource();
   refreshAll();
