@@ -9,6 +9,7 @@ const PHOTO_MAX_BYTES = 4 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 200 * 1024 * 1024;
 const ACCEPTED_VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".m4v"]);
 const PROFILE_MESSAGE_TIMEOUT_MS = 4500;
+const AUTH_REQUEST_COOLDOWN_MS = 15000;
 const SUPABASE_DEFAULT_CONFIG = {
   url: "",
   anonKey: "",
@@ -84,7 +85,7 @@ const I18N = {
     messageDeletingProfile: "Deleting your form...",
     messageProfileDeleted: "Your form has been deleted.",
     messageDeleteError: "Could not delete your form.",
-    confirmDeleteProfile: "Delete all your submitted data? This action cannot be undone.",
+    confirmDeleteProfile: "Delete everything (form, session and local data)? This action cannot be undone.",
     messageProfileCreated: "Profile ready. Complete your fields and send for verification.",
     messageProfileLoadError: "Could not load your profile from Supabase. Local draft loaded.",
     fieldPhotoTitle: "Edit profile photo",
@@ -151,7 +152,7 @@ const I18N = {
     messageDeletingProfile: "Eliminando tu formulario...",
     messageProfileDeleted: "Tu formulario ha sido eliminado.",
     messageDeleteError: "No se pudo eliminar tu formulario.",
-    confirmDeleteProfile: "¿Eliminar todos tus datos enviados? Esta acción no se puede deshacer.",
+    confirmDeleteProfile: "¿Eliminar todo (formulario, sesión y datos locales)? Esta acción no se puede deshacer.",
     messageProfileCreated: "Perfil listo. Completa tus campos y envíalo a verificación.",
     messageProfileLoadError: "No se pudo cargar tu perfil desde Supabase. Se cargó el borrador local.",
     fieldPhotoTitle: "Editar foto de perfil",
@@ -201,7 +202,6 @@ const $profileClose = document.getElementById("profileClose");
 const $profileAuthStep = document.getElementById("profileAuthStep");
 const $profileEditStep = document.getElementById("profileEditStep");
 const $profileEmailInput = document.getElementById("profileEmailInput");
-const $profileLoginBtn = document.getElementById("profileLoginBtn");
 const $profileSessionLine = document.getElementById("profileSessionLine");
 const $profileTermsInput = document.getElementById("profileTermsInput");
 const $profileStatusLine = document.getElementById("profileStatusLine");
@@ -209,7 +209,6 @@ const $profileVideoLockLine = document.getElementById("profileVideoLockLine");
 const $profileMessage = document.getElementById("profileMessage");
 const $profileSendBtn = document.getElementById("profileSendBtn");
 const $profileDeleteBtn = document.getElementById("profileDeleteBtn");
-const $profileLogoutBtn = document.getElementById("profileLogoutBtn");
 
 const $profilePhotoValue = document.getElementById("profilePhotoValue");
 const $profileNameValue = document.getElementById("profileNameValue");
@@ -229,6 +228,8 @@ let supabaseClient = createSupabaseClient();
 let profileMessageTimer = 0;
 let profileBusy = false;
 let authIdentity = null;
+let lastAuthRequestEmail = "";
+let lastAuthRequestAt = 0;
 
 function norm(s) {
   return (s ?? "").toString().trim().toLowerCase();
@@ -1121,10 +1122,9 @@ function resetProfileEditorTransientState() {
 function setProfileBusyState(isBusy) {
   profileBusy = Boolean(isBusy);
 
-  if ($profileLoginBtn) $profileLoginBtn.disabled = profileBusy;
+  if ($profileEmailInput) $profileEmailInput.disabled = profileBusy;
   if ($profileSendBtn) $profileSendBtn.disabled = profileBusy;
   if ($profileDeleteBtn) $profileDeleteBtn.disabled = profileBusy;
-  if ($profileLogoutBtn) $profileLogoutBtn.disabled = profileBusy;
 
   for (const button of document.querySelectorAll("[data-edit-field]")) {
     button.disabled = profileBusy;
@@ -1176,11 +1176,48 @@ async function removeAllProfileStorageObjects(ownerId) {
 function clearLocalSessionState(options = {}) {
   const keepAuth = Boolean(options.keepAuth);
   if (!keepAuth) authIdentity = null;
+  lastAuthRequestEmail = "";
+  lastAuthRequestAt = 0;
   sessionEmail = "";
   saveSessionEmail("");
   resetProfileEditorTransientState();
   if ($profileEmailInput) $profileEmailInput.value = "";
   showAuthStep();
+}
+
+function clearAccessibleCookies() {
+  const cookies = document.cookie ? document.cookie.split(";") : [];
+  for (const item of cookies) {
+    const [namePart] = item.split("=");
+    const name = namePart.trim();
+    if (!name) continue;
+    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+  }
+}
+
+function clearClientPersistence() {
+  try {
+    localStorage.removeItem(PROFILE_STORAGE_KEY);
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    localStorage.removeItem(INDICATOR_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_PREV_POSITIONS_KEY);
+
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (key.startsWith("sb-")) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {
+  }
+
+  try {
+    sessionStorage.clear();
+  } catch {
+  }
+
+  clearAccessibleCookies();
 }
 
 function showAuthStep() {
@@ -1720,12 +1757,16 @@ async function completeProfileLogin(identity, options = {}) {
   refreshAll();
 }
 
-async function handleProfileLogin() {
+async function handleProfileLogin(options = {}) {
   if (profileBusy) return;
+  const quietInvalid = Boolean(options.quietInvalid);
 
   const email = normalizeEmail($profileEmailInput?.value);
   if (!email) {
-    setProfileMessage(TEXT.authInvalidEmail, true);
+    const rawEmail = String($profileEmailInput?.value || "").trim();
+    if (!quietInvalid && rawEmail) {
+      setProfileMessage(TEXT.authInvalidEmail, true);
+    }
     return;
   }
 
@@ -1755,6 +1796,14 @@ async function handleProfileLogin() {
       saveSessionEmail("");
     }
 
+    if (
+      lastAuthRequestEmail === email &&
+      Date.now() - lastAuthRequestAt < AUTH_REQUEST_COOLDOWN_MS
+    ) {
+      setProfileMessage(TEXT.messageAuthEmailSent);
+      return;
+    }
+
     const { error } = await supabaseClient.auth.signInWithOtp({
       email,
       options: {
@@ -1768,6 +1817,8 @@ async function handleProfileLogin() {
       return;
     }
 
+    lastAuthRequestEmail = email;
+    lastAuthRequestAt = Date.now();
     setProfileMessage(TEXT.messageAuthEmailSent);
   } finally {
     setProfileBusyState(false);
@@ -1787,6 +1838,8 @@ async function handleDeleteProfile() {
 
   setProfileBusyState(true);
   setProfileMessage(TEXT.messageDeletingProfile, false, true);
+
+  let deleteSucceeded = false;
 
   try {
     if (hasSupabase()) {
@@ -1811,31 +1864,23 @@ async function handleDeleteProfile() {
       }
 
       await removeAllProfileStorageObjects(authIdentity.id);
+      deleteSucceeded = true;
+    } else {
+      deleteSucceeded = true;
     }
 
-    removeLocalProfile(profile.email);
-    clearLocalSessionState();
-    refreshAll();
-    setProfileMessage(TEXT.messageProfileDeleted);
-  } finally {
-    setProfileBusyState(false);
-  }
-}
-
-async function handleProfileLogout() {
-  if (profileBusy) return;
-
-  setProfileBusyState(true);
-
-  try {
     if (hasSupabase()) {
       const { error } = await supabaseClient.auth.signOut();
       if (error) console.warn("[CALI] Supabase signOut failed", error);
     }
 
+    removeLocalProfile(profile.email);
+    clearClientPersistence();
     clearLocalSessionState();
+    profiles = loadProfiles();
+    indicatorState = loadIndicatorState();
     refreshAll();
-    setProfileMessage(TEXT.messageSignedOut);
+    setProfileMessage(deleteSucceeded ? TEXT.messageProfileDeleted : TEXT.messageDeleteError, !deleteSucceeded);
   } finally {
     setProfileBusyState(false);
   }
@@ -1866,14 +1911,14 @@ $profileOverlay?.addEventListener("click", (event) => {
   if (event.target === $profileOverlay) closeProfileModal();
 });
 
-$profileLoginBtn?.addEventListener("click", () => {
-  void handleProfileLogin();
-});
 $profileEmailInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
     void handleProfileLogin();
   }
+});
+$profileEmailInput?.addEventListener("blur", () => {
+  void handleProfileLogin({ quietInvalid: true });
 });
 
 $profileTermsInput?.addEventListener("change", () => {
@@ -1887,9 +1932,6 @@ $profileSendBtn?.addEventListener("click", () => {
 });
 $profileDeleteBtn?.addEventListener("click", () => {
   void handleDeleteProfile();
-});
-$profileLogoutBtn?.addEventListener("click", () => {
-  void handleProfileLogout();
 });
 
 for (const button of document.querySelectorAll("[data-edit-field]")) {
@@ -1957,4 +1999,3 @@ setInterval(() => {
     refreshAll();
   });
 }, 30000);
-
