@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>paracu.sw</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Manrope:wght@400;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <section class="hero" aria-label="Portada principal">
+        <picture class="hero-media">
+          <source
+            media="(max-width: 768px)"
+            srcset="fotos/IMG_6663.jpg"
+          />
+          <img
+            src="fotos/IMG_1340.jpg"
+          />
+        </picture>
+        <div class="hero-overlay"></div>
+        <p class="hero-phrase" aria-label="Frase principal">ns bro haz algo<br></p>
+      </section>
+
+      <section class="services" aria-label="Servicios principales">
+        <a href="cf.html" class="service-card reveal service-card--cf">
+          <img
+            class="card-image card-image--light"
+            src="fotos_cf/vitruvian_final.png"
+            alt="Progreso de cambio físico"
+          />
+          <img
+            class="card-image card-image--dark"
+            src="fotos_cf/vitruvian_final_oscure.png"
+            alt="Progreso de cambio físico en modo oscuro"
+          />
+          <div class="card-overlay"></div>
+          <h2>Cambio físico</h2>
+        </a>
+        <a
+          href="freestyle.html"
+          class="service-card reveal service-card--freestyle"
+          data-random-images="fotos_freestyle/IMG_1133.PNG,fotos_freestyle/IMG_2953.jpeg,fotos_freestyle/IMG_2954.jpeg,fotos_freestyle/IMG_2955.jpeg,fotos_freestyle/IMG_6664.jpg"
+        >
+          <img
+            class="card-image card-image--main"
+            src="fotos_freestyle/IMG_1133.PNG"
+            alt="Mentoría de freestyle"
+          />
+          <div class="card-overlay"></div>
+          <h2>Mentoría de freestyle</h2>
+        </a>
+      </section>
+    </main>
+
+    <script src="script.js"></script>
+  </body>
+</html>

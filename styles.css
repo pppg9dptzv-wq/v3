@@ -1,0 +1,206 @@
+:root {
+  color-scheme: light dark;
+  --forest: #143109;
+  --sage: #aaae7f;
+  --beige: #d0d6b3;
+  --snow: #f7f7f7;
+  --platinum: #efefef;
+  --shadow: rgba(20, 49, 9, 0.14);
+  --page-bg-start: #f7f7f7;
+  --page-bg-end: #efefef;
+  --text-color: #143109;
+  --card-border: rgba(170, 174, 127, 0.95);
+  --hero-overlay-top: rgba(20, 49, 9, 0);
+  --hero-overlay-mid: rgba(20, 49, 9, 0.18);
+  --hero-overlay-bottom: rgba(20, 49, 9, 0.66);
+  --card-overlay-top: rgba(20, 49, 9, 0.1);
+  --card-overlay-bottom: rgba(20, 49, 9, 0.72);
+  --card-title: #f7f7f7;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --shadow: rgba(0, 0, 0, 0.42);
+    --page-bg-start: #000000;
+    --page-bg-end: #000000;
+    --text-color: #efefef;
+    --card-border: rgba(247, 247, 247, 0.82);
+    --hero-overlay-mid: rgba(0, 0, 0, 0.24);
+    --hero-overlay-bottom: rgba(0, 0, 0, 0.74);
+    --card-overlay-top: rgba(0, 0, 0, 0.08);
+    --card-overlay-bottom: rgba(0, 0, 0, 0.78);
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "Manrope", sans-serif;
+  background: linear-gradient(160deg, var(--page-bg-start), var(--page-bg-end));
+  color: var(--text-color);
+}
+
+main {
+  width: min(1200px, 100%);
+  margin: 0 auto;
+}
+
+.hero {
+  position: relative;
+  height: 100vh;
+  min-height: 560px;
+  overflow: hidden;
+  border-radius: 0 0 24px 24px;
+}
+
+.hero-media,
+.hero-media img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.hero-media img {
+  object-fit: cover;
+}
+
+.hero-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to top,
+    var(--hero-overlay-bottom) 0%,
+    var(--hero-overlay-mid) 60%,
+    var(--hero-overlay-top) 100%
+  );
+}
+
+.hero-phrase {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(90%, 760px);
+  min-height: 3rem;
+  text-align: center;
+  font-family: "Bebas Neue", sans-serif;
+  font-size: clamp(4rem, 18vw, 12rem);
+  letter-spacing: 0.08em;
+  color: var(--snow);
+  text-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+}
+
+.services {
+  width: min(1000px, 92%);
+  margin: 5rem auto 6rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 2rem;
+}
+
+.service-card {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background: transparent;
+  border: 2px solid var(--card-border);
+  border-radius: 22px;
+  aspect-ratio: 1 / 1;
+  display: grid;
+  place-items: center;
+  text-decoration: none;
+  box-shadow: 0 14px 28px var(--shadow);
+  transition: transform 0.35s ease, box-shadow 0.35s ease, opacity 0.5s ease;
+}
+
+.card-image {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.card-image--dark {
+  display: none;
+}
+
+.card-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+
+.service-card h2 {
+  position: relative;
+  z-index: 2;
+  font-family: "Bebas Neue", sans-serif;
+  font-size: clamp(2rem, 3vw, 2.8rem);
+  letter-spacing: 0.04em;
+  text-align: center;
+  color: var(--card-title);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+  padding: 0 1rem;
+}
+
+.service-card--cf h2 {
+  color: #000000;
+  text-shadow: 0 1px 10px rgba(255, 255, 255, 0.35);
+}
+
+.service-card:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 20px 40px rgba(20, 49, 9, 0.2);
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(32px);
+}
+
+.reveal.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-color-scheme: dark) {
+  .card-image--light {
+    display: none;
+  }
+
+  .card-image--dark {
+    display: block;
+  }
+
+  .service-card--cf {
+    border-color: rgba(208, 214, 179, 0.95);
+  }
+
+  .service-card--freestyle {
+    border-color: rgba(247, 247, 247, 0.95);
+  }
+
+  .service-card--cf h2 {
+    color: #ffffff;
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.55);
+  }
+}
+
+@media (max-width: 768px) {
+  .hero {
+    height: 100vh;
+    min-height: 100vh;
+    border-radius: 0;
+  }
+
+  .services {
+    grid-template-columns: 1fr;
+    margin-top: 3.5rem;
+    gap: 1.5rem;
+  }
+}
